@@ -403,6 +403,73 @@ def analyze_directory(dir_path_str: str, recursive: bool = False) -> List[Dict[s
             })
     return results
 
+
+
+# -----------------------------
+# Corpus summary (directory-level)
+# -----------------------------
+
+def compute_corpus_summary(dir_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Aggregate stats across a list of per-workbook results.
+    """
+    if not dir_results:
+        return {
+            "num_workbooks": 0,
+            "total_worksheets": 0,
+            "overall_score_avg": 0.0,
+            "overall_score_min": 0.0,
+            "overall_score_max": 0.0,
+            "worksheet_complexity_avg": 0.0,
+            "worksheets_with_table_calc_pct": 0.0,
+            "worksheets_with_lod_pct": 0.0,
+            "errors_count": 0,
+            "top_mark_types": [],
+        }
+    import statistics as _stats
+
+    num_workbooks = len(dir_results)
+    errors_count = sum(1 for r in dir_results if r.get("error"))
+    summaries = [r.get("summary", {}) for r in dir_results if r.get("summary")]
+    overall_scores = [s.get("overall_score", 0.0) for s in summaries]
+
+    all_ws = []
+    for r in dir_results:
+        all_ws.extend(r.get("worksheets", []))
+
+    total_worksheets = len(all_ws)
+    worksheet_scores = [ws.get("complexity_score", 0.0) for ws in all_ws]
+    has_table_calc = [bool(ws.get("has_table_calc_ws")) for ws in all_ws]
+    has_lod_anywhere = [bool(ws.get("has_lod_anywhere")) for ws in all_ws]
+
+    # mark types
+    from collections import Counter
+    mt_counter = Counter()
+    for ws in all_ws:
+        mts = ws.get("mark_types", [])
+        if isinstance(mts, list):
+            mt_counter.update(mts)
+        elif isinstance(mts, str) and mts:
+            mt_counter.update(mts.split(";"))
+    top_mark_types = mt_counter.most_common(10)
+
+    def _safe_mean(vals):
+        return round(sum(vals) / len(vals), 2) if vals else 0.0
+
+    corpus = {
+        "num_workbooks": num_workbooks,
+        "total_worksheets": total_worksheets,
+        "overall_score_avg": _safe_mean(overall_scores),
+        "overall_score_min": round(min(overall_scores), 2) if overall_scores else 0.0,
+        "overall_score_max": round(max(overall_scores), 2) if overall_scores else 0.0,
+        "worksheet_complexity_avg": _safe_mean(worksheet_scores),
+        "worksheets_with_table_calc_pct": round((sum(has_table_calc) / total_worksheets) * 100, 1) if total_worksheets else 0.0,
+        "worksheets_with_lod_pct": round((sum(has_lod_anywhere) / total_worksheets) * 100, 1) if total_worksheets else 0.0,
+        "errors_count": errors_count,
+        "top_mark_types": top_mark_types,
+    }
+    return corpus
+
 # -----------------------------
 # CLI
 # -----------------------------
@@ -497,8 +564,9 @@ def _write_output(data: Any, out_path: Path) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze Tableau workbook complexity.")
-    parser.add_argument("workbook", help="Path to .twb or .twbx")
+    parser.add_argument("workbook", help="Path to .twb/.twbx or a directory containing them")
     parser.add_argument("--out", help="Output file (.json, .csv, or .tsv). If omitted, prints JSON to stdout.")
+    parser.add_argument("--recursive", action="store_true", help="When INPUT is a directory, recurse into subfolders.")
     args = parser.parse_args()
 
     target = Path(args.workbook)
