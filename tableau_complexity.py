@@ -289,11 +289,134 @@ def _score_complexity(
     has_lod: bool,
     num_params: int,
     mark_types: List[str],
+    shelf_density: int,
+    cfg: Dict[str, Any],
 ) -> float:
     """
     Simple weighted score. Tune weights for your environment.
     """
-    weights = {
+    weights = cfg.get("weights", DEFAULT_CONFIG["weights"]).copy()
+    # ensure mark_bonus exists
+    if "mark_bonus" not in weights:
+        weights["mark_bonus"] = DEFAULT_CONFIG["weights"]["mark_bonus"].copy()
+    # Start of weights = {
+
+    score = (
+        dims * weights["dims"]
+        + meas * weights["meas"]
+        + num_filters * weights["filters"]
+        + num_calcs * weights["calcs"]
+        + (weights["table_calc"] if has_table_calc else 0.0)
+        + (weights["lod"] if has_lod else 0.0)
+        + num_params * weights["params"]
+        + shelf_density * 0.5
+    )
+    if mark_types:
+        mb = sum(weights["mark_bonus"].get(m, 0.6) for m in mark_types) / len(mark_types)
+        score += mb
+    return round(score, 2)
+
+
+
+
+# -----------------------------
+# Shelf extraction
+# -----------------------------
+
+SHELF_TAGS_SINGLE = ["color", "size", "shape", "label", "tooltip", "detail", "path", "text", "angle", "opacity"]
+SHELF_TAGS_MULTI = ["rows", "cols"]
+
+def _friendly_field_name(ref: str) -> str:
+    """
+    Convert a Tableau column ref like
+      [federated.x].[none:Season Label (copy):ok]
+    or  [Calculation_123]
+    into a friendlier field label.
+    Heuristic: take the last bracketed token, then split by ':' and keep the middle part if present.
+    """
+    if not ref:
+        return ""
+    m = re.findall(r"\[([^\]]+)\]", ref)
+    if not m:
+        return ref
+    token = m[-1]  # rightmost [...] part
+    # If like none:Field Name:nk -> keep center
+    parts = token.split(":")
+    if len(parts) >= 2:
+        # drop first and last if they look like codes
+        middle = parts[1]
+        # sometimes 'none' or similar occupies slot 0, field is 1..-2
+        # try to find the longest alpha chunk among parts
+        candidates = [p for p in parts if any(c.isalpha() for c in p)]
+        if candidates:
+            middle = max(candidates, key=len)
+        return middle.strip()
+    # else: simple field name
+    return token.strip()
+
+def _extract_shelves(ws: ET.Element) -> Dict[str, List[str]]:
+    """
+    Return a dict of shelves -> list of human-friendly field names.
+    Rows/Cols can have multiple <column>. Other encodings are typically single.
+    """
+    shelves: Dict[str, List[str]] = {k: [] for k in SHELF_TAGS_MULTI + SHELF_TAGS_SINGLE}
+
+    # Multi-item shelves (rows/cols): list all child <column> attributes
+    for shelf in SHELF_TAGS_MULTI:
+        node = ws.find(f".//{shelf}")
+        if node is not None:
+            for col in node.findall(".//column"):
+                # column refs may be in 'field' or 'name' or 'column' attrs
+                raw = col.get("field") or col.get("name") or col.get("column") or ""
+                shelves[shelf].append(_friendly_field_name(raw))
+
+    # Single-item shelves (encodings): the node usually has a 'column' attribute
+    for shelf in SHELF_TAGS_SINGLE:
+        node = ws.find(f".//{shelf}")
+        if node is not None:
+            raw = node.get("column") or node.get("field") or node.get("name") or ""
+            if raw:
+                shelves[shelf].append(_friendly_field_name(raw))
+
+    # De-duplicate while preserving order
+    for k, vals in shelves.items():
+        seen = set()
+        dedup = []
+        for v in vals:
+            if v and v not in seen:
+                seen.add(v)
+                dedup.append(v)
+        shelves[k] = dedup
+
+    return shelves
+
+
+
+# -----------------------------
+# Shelf density metric
+# -----------------------------
+
+def _compute_shelf_density(shelves: Dict[str, List[str]], cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Compute density as the number of non-empty channels among a defined set.
+    Returns: {"shelf_density": int, "shelf_channels_used": [...], "shelf_channels_total": int}
+    """
+    channels = cfg.get("shelf_channels", DEFAULT_CONFIG["shelf_channels"])
+    used = [ch for ch in channels if len(shelves.get(ch, [])) > 0]
+    return {
+        "shelf_density": len(used),
+        "shelf_channels_used": used,
+        "shelf_channels_total": len(channels),
+    }
+
+
+
+# -----------------------------
+# Config loading (weights, channels, mark bonuses)
+# -----------------------------
+
+DEFAULT_CONFIG: Dict[str, Any] = {
+    "weights": {
         "dims": 0.5,
         "meas": 0.7,
         "filters": 0.6,
@@ -301,8 +424,8 @@ def _score_complexity(
         "table_calc": 2.0,
         "lod": 2.0,
         "params": 0.8,
+        "shelf_density": 0.8,
         "mark_bonus": {
-            # certain mark types tend to need more care (dual-axis blends not captured here)
             "text": 0.2,
             "bar": 0.5,
             "line": 0.7,
@@ -315,36 +438,47 @@ def _score_complexity(
             "box-and-whisker": 1.3,
             "heatmap": 1.0,
             "density": 1.2,
-            "unknown": 0.4,
-        },
-    }
+            "unknown": 0.4
+        }
+    },
+    "shelf_channels": ["rows","cols","color","size","shape","label","tooltip","detail","path","text","angle","opacity"]
+}
 
-    score = (
-        dims * weights["dims"] +
-        meas * weights["meas"] +
-        num_filters * weights["filters"] +
-        num_calcs * weights["calcs"] +
-        (weights["table_calc"] if has_table_calc else 0.0) +
-        (weights["lod"] if has_lod else 0.0) +
-        num_params * weights["params"]
-    )
-    # add average mark bonus across detected types
-    if mark_types:
-        mb = sum(weights["mark_bonus"].get(m, 0.6) for m in mark_types) / len(mark_types)
-        score += mb
-    return round(score, 2)
+def _deep_merge(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(a)
+    for k, v in (b or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
 
+def load_config(config_path: Optional[str]) -> Dict[str, Any]:
+    """Load JSON config and merge onto defaults; if None or missing, return defaults."""
+    cfg = DEFAULT_CONFIG
+    if config_path:
+        p = Path(config_path)
+        if p.exists():
+            try:
+                user = json.loads(p.read_text(encoding="utf-8"))
+                cfg = _deep_merge(DEFAULT_CONFIG, user)
+            except Exception:
+                # If parsing fails, fall back to defaults
+                cfg = DEFAULT_CONFIG
+    return cfg
 
 # -----------------------------
 # Public API
 # -----------------------------
 
-def analyze_workbook(path_str: str) -> List[Dict[str, Any]]:
+def analyze_workbook(path_str: str, config_path: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Analyze a Tableau .twb or .twbx and return per-worksheet dictionaries.
     """
     path = Path(path_str)
     root = _load_xml(path)
+
+    cfg = load_config(config_path)
 
     # workbook-level derived info
     all_exprs = _collect_calculation_expressions(root)
@@ -362,6 +496,9 @@ def analyze_workbook(path_str: str) -> List[Dict[str, Any]]:
         dims, meas = _count_dimensions_measures(fields)
         num_calcs, has_table_calc_ws = _worksheet_calc_counts(ws)
 
+        shelves = _extract_shelves(ws)
+        density = _compute_shelf_density(shelves, cfg)
+
         score = _score_complexity(
             dims=dims,
             meas=meas,
@@ -371,11 +508,28 @@ def analyze_workbook(path_str: str) -> List[Dict[str, Any]]:
             has_lod=has_lod,  # workbook-level signal
             num_params=len(params),
             mark_types=mark_types,
+            shelf_density=density.get("shelf_density", 0),
+            cfg=cfg,
         )
 
         results.append({
             "worksheet": name,
             "mark_types": mark_types,
+            "rows": shelves.get("rows", []),
+            "cols": shelves.get("cols", []),
+            "color": shelves.get("color", []),
+            "size": shelves.get("size", []),
+            "shape": shelves.get("shape", []),
+            "label": shelves.get("label", []),
+            "tooltip": shelves.get("tooltip", []),
+            "detail": shelves.get("detail", []),
+            "path": shelves.get("path", []),
+            "text_shelf": shelves.get("text", []),
+            "angle": shelves.get("angle", []),
+            "opacity": shelves.get("opacity", []),
+            "shelf_density": density.get("shelf_density", 0),
+            "shelf_channels_used": density.get("shelf_channels_used", []),
+
             "num_fields_used": len(fields),
             "num_dimensions_est": dims,
             "num_measures_est": meas,
@@ -414,9 +568,9 @@ def compute_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def analyze_workbook_with_summary(path_str: str) -> Dict[str, Any]:
+def analyze_workbook_with_summary(path_str: str, config_path: Optional[str] = None) -> Dict[str, Any]:
     """Analyze and return {'summary': {...}, 'worksheets': [...]}"""
-    rows = analyze_workbook(path_str)
+    rows = analyze_workbook(path_str, config_path=config_path)
     summary = compute_summary(rows)
     return {"summary": summary, "worksheets": rows}
 
@@ -454,7 +608,7 @@ def analyze_directory(dir_path: str) -> List[Dict[str, Any]]:
 # Directory analysis
 # -----------------------------
 
-def analyze_directory(dir_path_str: str, recursive: bool = False) -> List[Dict[str, Any]]:
+def analyze_directory(dir_path_str: str, recursive: bool = False, config_path: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Analyze all .twb and .twbx files in a directory.
     Returns a list of {'workbook': <name>, 'summary': {...}, 'worksheets': [...]}
@@ -474,7 +628,7 @@ def analyze_directory(dir_path_str: str, recursive: bool = False) -> List[Dict[s
     results: List[Dict[str, Any]] = []
     for f in sorted(files):
         try:
-            data = analyze_workbook_with_summary(str(f))
+            data = analyze_workbook_with_summary(str(f), config_path=config_path)
             data["workbook"] = f.name
             results.append(data)
         except Exception as e:
@@ -549,6 +703,7 @@ def compute_corpus_summary(dir_results: List[Dict[str, Any]]) -> Dict[str, Any]:
         "worksheet_complexity_avg": _safe_mean(worksheet_scores),
         "worksheets_with_table_calc_pct": round((sum(has_table_calc) / total_worksheets) * 100, 1) if total_worksheets else 0.0,
         "worksheets_with_lod_pct": round((sum(has_lod_anywhere) / total_worksheets) * 100, 1) if total_worksheets else 0.0,
+        "shelf_density_avg": _safe_mean([ws.get("shelf_density", 0) for ws in all_ws]),
         "errors_count": errors_count,
         "top_mark_types": top_mark_types,
     }
@@ -628,8 +783,12 @@ def _write_output(data: Any, out_path: Path) -> None:
             writer.writeheader()
             for r in rows or []:
                 r = dict(r)
-                if isinstance(r.get("mark_types"), list):
-                    r["mark_types"] = ";".join(r["mark_types"])
+
+                # flatten list fields
+                for key in ["mark_types","rows","cols","color","size","shape","label","tooltip","detail","path","text_shelf","angle","opacity","shelf_channels_used"]:
+                    if isinstance(r.get(key), list):
+                        r[key] = ";".join(r[key])
+
                 writer.writerow(r)
 
         # Summary sidecar outputs
@@ -651,6 +810,7 @@ def main():
     parser.add_argument("workbook", help="Path to .twb/.twbx or a directory containing them")
     parser.add_argument("--out", help="Output file (.json, .csv, or .tsv). If omitted, prints JSON to stdout.")
     parser.add_argument("--recursive", action="store_true", help="When INPUT is a directory, recurse into subfolders.")
+    parser.add_argument("--config", help="Path to config JSON with weights/channel settings.", default=None)
     args = parser.parse_args()
 
     target = Path(args.workbook)

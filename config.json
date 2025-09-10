@@ -1,0 +1,33 @@
+{
+  "weights": {
+    "dims": 0.5,
+    "meas": 0.7,
+    "filters": 0.6,
+    "calcs": 1.2,
+    "table_calc": 2.5,
+    "lod": 2.0,
+    "params": 0.8,
+    "shelf_density": 1.0,
+    "mark_bonus": {
+      "text": 0.1,
+      "bar": 0.6,
+      "line": 0.8,
+      "scatter": 1.3,
+      "map": 1.2,
+      "box-and-whisker": 1.4,
+      "density": 1.3,
+      "unknown": 0.3
+    }
+  },
+  "shelf_channels": [
+    "rows",
+    "cols",
+    "color",
+    "size",
+    "shape",
+    "label",
+    "tooltip",
+    "detail",
+    "text"
+  ]
+}
