@@ -83,3 +83,9 @@ python tableau_complexity.py /path/to/folder --recursive --config config.json --
 
 ## License
 MIT (or adapt to your needs).
+
+
+## Disclaimer
+This utility was originally generated with the assistance of AI (ChatGPT).  
+While care has been taken to make it functional and accurate, you should **review, test, and adapt** it for your specific use cases and data environments.  
+No warranty is provided, and you assume responsibility for any use.
