@@ -113,20 +113,104 @@ def _worksheet_nodes(root: ET.Element) -> List[ET.Element]:
 def _worksheet_name(ws: ET.Element) -> str:
     return ws.get("name") or ws.get("caption") or "(unnamed)"
 
+
 def _worksheet_mark_types(ws: ET.Element) -> List[str]:
-    """Return unique mark types (e.g., bar, line, area, shape, text)."""
+    """Return unique mark types using robust, namespace-agnostic heuristics.
+    Looks for:
+      - <mark type="...">
+      - any element with attribute mark="..."
+      - <style mark="...">
+      - <view mark="...">
+      - presence of map-related elements -> 'map'
+    """
     types: Set[str] = set()
-    # Common: <mark type="bar"> or <marks><mark type="bar"/></marks>
-    for mark in ws.findall(".//mark"):
-        t = (mark.get("type") or "").strip()
-        if t:
-            types.add(t.lower())
-    # Fallback: some workbooks store a 'mark' attribute on <style> or <view> nodes
-    for node in ws.findall(".//*[@mark]"):
-        t = (node.get("mark") or "").strip()
-        if t:
-            types.add(t.lower())
-    return sorted(types) if types else ["unknown"]
+
+    def _local(tag: str) -> str:
+        # strip namespace if present: {ns}tag -> tag
+        if tag and "}" in tag:
+            return tag.split("}", 1)[1]
+        return tag or ""
+
+    # Walk all descendants once
+    for el in ws.iter():
+        tag = _local(el.tag).lower()
+        # direct mark element with type attr
+        t_attr = el.get("type") or el.get("mark") or ""
+        if tag in ("mark", "marks", "style", "view") and t_attr:
+            types.add(t_attr.strip().lower())
+        # any element with a 'mark' attribute
+        m = el.get("mark")
+        if m:
+            types.add(m.strip().lower())
+        # map detection
+        if tag in ("map", "layers") or el.get("map") is not None:
+            types.add("map")
+
+    # Normalize synonyms
+    synonyms = {
+        "bar": "bar",
+        "line": "line",
+        "area": "area",
+        "shape": "shape",
+        "text": "text",
+        "gantt": "gantt",
+        "polygon": "polygon",
+        "circle": "scatter",
+        "square": "scatter",
+        "pie": "pie",
+        "heatmap": "heatmap",
+        "density": "density",
+        "boxandwhisker": "box-and-whisker",
+        "box-and-whisker": "box-and-whisker",
+        "box": "box-and-whisker",
+        "map": "map",
+        "automatic": "automatic",
+    }
+    normalized: Set[str] = set()
+    for t in list(types):
+        base = t.replace("_", "-").replace(" ", "-")
+        base = re.sub(r"[^a-z\-]", "", base)
+        normalized.add(synonyms.get(base, base))
+
+    
+    # Fallback inference if still empty
+    if not normalized:
+        # Shelf-based inference
+        def count_cols(node_name: str) -> int:
+            node = ws.find(f".//{node_name}")
+            return len(node.findall(".//column")) if node is not None else 0
+        n_rows = count_cols("rows")
+        n_cols = count_cols("cols")
+        name = (_worksheet_name(ws) or "").lower()
+
+        if n_rows == 0 and n_cols == 0:
+            has_color = ws.find(".//color") is not None
+            has_size = ws.find(".//size") is not None
+            has_shape = ws.find(".//shape") is not None
+            if "text" in name:
+                normalized.add("text")
+            elif has_shape:
+                normalized.add("shape")
+            elif has_color and has_size:
+                normalized.add("scatter")
+            else:
+                # Treat empty-row/col worksheets as KPI/text tables by default
+                normalized.add("text")
+        else:
+            # With axes, make a weak guess based on field roles and names
+            fields = _worksheet_field_refs(ws)
+            tokens = " ".join(f.lower() for f in fields)
+            if any(k in tokens for k in ["bin(", "hist", "bucket"]):
+                normalized.add("histogram")
+            elif any(k in tokens for k in ["lat", "longitude", "latitude"]):
+                normalized.add("map")
+            elif any(k in tokens for k in ["path", "index(", "running_", "window_"]):
+                normalized.add("line")
+            else:
+                normalized.add("bar")
+
+    return sorted(normalized) if normalized else ["unknown"]
+
 
 def _worksheet_filter_count(ws: ET.Element) -> int:
     return len(ws.findall(".//filter"))
