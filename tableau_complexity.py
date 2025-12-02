@@ -886,6 +886,9 @@ def _copy_report_assets(dest_dir: Path) -> None:
     if not src_assets.exists():
         return
     dest_assets = dest_dir / "report_assets"
+    # Avoid copying when destination already points at the source directory.
+    if dest_assets.resolve() == src_assets.resolve():
+        return
     for item in src_assets.rglob("*"):
         if item.is_dir():
             continue
