@@ -7,6 +7,8 @@ A Python utility for parsing Tableau workbooks (`.twb` / `.twbx`) to extract per
 - Detect mark/chart types with robust fallbacks.
 - Extract **shelves** per worksheet: Rows, Cols, Color, Size, Shape, Label, Tooltip, Detail, Path, Text, Angle, Opacity.
 - Compute a **shelf_density** metric and include it in scoring.
+- Extract each worksheet's **calculated field formulas**, score their complexity, and surface the formulas alongside per-worksheet metrics.
+- Aggregate the **formula complexity** across a workbook and fold it into the overall workbook complexity score.
 - Flag **table calcs** and **LOD** usage.
 - Compute a **workbook summary**, and in directory mode, a **corpus summary**.
 - **Directory mode** (+ optional `--recursive`) to batch analyze many workbooks.
@@ -42,15 +44,16 @@ python tableau_complexity.py /path/to/folder --recursive --config config.json --
     "dims": 0.5,
     "meas": 0.7,
     "filters": 0.6,
-    "calcs": 1.2,
-    "table_calc": 2.0,
-    "lod": 2.0,
-    "params": 0.8,
-    "shelf_density": 0.8,
-    "mark_bonus": {
-      "text": 0.2,
-      "bar": 0.5,
-      "line": 0.7,
+      "calcs": 1.2,
+      "table_calc": 2.0,
+      "lod": 2.0,
+      "params": 0.8,
+      "shelf_density": 0.8,
+      "calc_formula_complexity": 0.3,
+      "mark_bonus": {
+        "text": 0.2,
+        "bar": 0.5,
+        "line": 0.7,
       "area": 0.7,
       "shape": 0.8,
       "map": 1.0,
@@ -76,6 +79,8 @@ python tableau_complexity.py /path/to/folder --recursive --config config.json --
 - **CSV (per workbook)**: worksheets table; sidecars:
   - `_summary.json`, `_summary.csv`
 - **Directory CSV**: `all_results.csv` (all worksheets), `all_results_summaries.csv` (per-workbook), plus `all_results_corpus_summary.(json|csv)`.
+
+Each worksheet row now includes the resolved `calculated_fields` (field name, formula text, and formula complexity) as well as aggregate complexity metrics (`calc_formula_complexity_total`, `calc_formula_complexity_avg`). The workbook summaries include the total number of calculated fields plus the aggregated/average formula complexity so you can see how calculated logic contributes to overall workbook complexity.
 
 ## Notes
 - This uses heuristics; Tableau XML varies by version. If a mark/shelf doesn't show up, share a sample and adjust the XPath/logic accordingly.

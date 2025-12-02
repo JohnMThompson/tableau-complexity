@@ -254,27 +254,107 @@ def _count_dimensions_measures(field_names: Set[str]) -> Tuple[int, int]:
                 dim += 1
     return dim, meas
 
-def _worksheet_calc_counts(ws: ET.Element) -> Tuple[int, int]:
+def _collect_calc_library(root: ET.Element) -> Dict[str, str]:
+    """Build a mapping of friendly calc names -> formulas for quick lookup."""
+    library: Dict[str, str] = {}
+    for col in root.findall(".//column"):
+        calc_node = col.find("calculation")
+        formula = calc_node.get("formula") if calc_node is not None else None
+        if not formula:
+            formula = calc_node.text if calc_node is not None else None
+        if not formula:
+            continue
+        keys: Set[str] = set()
+        for attr in ("name", "caption"):
+            raw = col.get(attr)
+            if raw:
+                keys.add(raw.strip())
+                friendly = _friendly_field_name(raw)
+                if friendly:
+                    keys.add(friendly)
+        for key in keys:
+            if key:
+                library[key] = formula
+    return library
+
+FORMULA_FUNC_RE = re.compile(r"\b([A-Z_][A-Z0-9_]+)\s*\(")
+
+def _calc_formula_complexity(formula: str) -> float:
+    """Heuristic complexity score for a Tableau calc formula."""
+    if not formula:
+        return 0.0
+    normalized = formula.upper()
+    length_score = min(len(formula) / 80.0, 4.0)
+    func_hits = FORMULA_FUNC_RE.findall(normalized)
+    func_score = min(len(func_hits) * 0.35, 4.0)
+    conditional_score = 0.0
+    conditional_score += normalized.count(" IF ") * 0.6
+    conditional_score += normalized.count(" CASE ") * 0.5
+    conditional_score += normalized.count(" ELSEIF ") * 0.4
+    conditional_score += normalized.count(" THEN ") * 0.2
+    nesting_depth = normalized.count("(")
+    nesting_score = min(max(nesting_depth - 4, 0) * 0.15, 3.5)
+    lod_bonus = 1.0 if _detect_has_lod([formula]) else 0.0
+    table_calc_bonus = 0.8 if _detect_has_table_calcs([formula]) else 0.0
+    score = length_score + func_score + conditional_score + nesting_score + lod_bonus + table_calc_bonus
+    return round(score, 2)
+
+def _worksheet_calc_details(ws: ET.Element, calc_library: Dict[str, str]) -> Dict[str, Any]:
     """
-    Count calculated fields referenced in this worksheet.
-    Heuristic: look for columns with a <calculation> child, and inline calcs on columns.
-    Returns (num_calculated_fields, num_table_calcs_detected_in_these)
+    Return details about calculations referenced in a worksheet.
+    Includes resolved formulas + per-formula complexity metrics.
     """
-    calc_exprs = []
+    details: List[Dict[str, Any]] = []
+    exprs: List[str] = []
+    seen_pairs: Set[Tuple[str, str]] = set()
+
     for col in ws.findall(".//column"):
-        # direct child <calculation>
+        field_ref = col.get("field") or col.get("name") or col.get("column") or ""
+        friendly = col.get("caption") or col.get("alias") or ""
+        if not friendly:
+            friendly = _friendly_field_name(field_ref)
+        formulas: List[str] = []
+
         for calc in col.findall(".//calculation"):
             formula = calc.get("formula") or (calc.text or "")
             if formula:
-                calc_exprs.append(formula)
-        # formula attribute on column (less common)
+                formulas.append(formula)
+
         formula_attr = col.get("formula")
         if formula_attr:
-            calc_exprs.append(formula_attr)
+            formulas.append(formula_attr)
 
-    num_calcs = len(calc_exprs)
-    has_table_calc = _detect_has_table_calcs(calc_exprs)
-    return num_calcs, (1 if has_table_calc else 0)
+        if not formulas and friendly and calc_library.get(friendly):
+            formulas.append(calc_library[friendly])
+
+        for formula in formulas:
+            formula = formula.strip()
+            if not formula:
+                continue
+            key = (friendly or field_ref, formula)
+            if key in seen_pairs:
+                continue
+            seen_pairs.add(key)
+            complexity = _calc_formula_complexity(formula)
+            exprs.append(formula)
+            details.append({
+                "field": friendly or field_ref.strip(),
+                "formula": formula,
+                "formula_complexity": complexity,
+            })
+
+    total_complexity = round(sum(d["formula_complexity"] for d in details), 2)
+    avg_complexity = round(total_complexity / len(details), 2) if details else 0.0
+    has_table_calc = _detect_has_table_calcs(exprs)
+
+    return {
+        "count": len(details),
+        "has_table_calc": has_table_calc,
+        "details": details,
+        "total_complexity": total_complexity,
+        "avg_complexity": avg_complexity,
+        "expressions": exprs,
+    }
 
 # -----------------------------
 # Complexity scoring
@@ -290,6 +370,7 @@ def _score_complexity(
     num_params: int,
     mark_types: List[str],
     shelf_density: int,
+    calc_formula_complexity: float,
     cfg: Dict[str, Any],
 ) -> float:
     """
@@ -309,6 +390,7 @@ def _score_complexity(
         + (weights["table_calc"] if has_table_calc else 0.0)
         + (weights["lod"] if has_lod else 0.0)
         + num_params * weights["params"]
+        + calc_formula_complexity * weights.get("calc_formula_complexity", 0.3)
         + shelf_density * 0.5
     )
     if mark_types:
@@ -325,6 +407,15 @@ def _score_complexity(
 
 SHELF_TAGS_SINGLE = ["color", "size", "shape", "label", "tooltip", "detail", "path", "text", "angle", "opacity"]
 SHELF_TAGS_MULTI = ["rows", "cols"]
+
+# Tokens Tableau sticks into field identifiers that we rarely want to surface
+FIELD_NAME_STOPWORDS = {
+    "none", "copy", "usr", "nk", "ok", "qk", "mk", "sk", "ik", "jk", "ak",
+    "bk", "ck", "dk", "calc", "calculation", "auto", "tmp", "column",
+}
+
+FIELD_REF_RE = re.compile(r"\[[^\]]+\]")
+DATASOURCE_PREFIXES = ("federated.", "sqlproxy.", "sqlproxyserver.", "sqlproxycur.", "hyper.", "extract_", "sqlproxytableau.")
 
 def _friendly_field_name(ref: str) -> str:
     """
@@ -343,16 +434,62 @@ def _friendly_field_name(ref: str) -> str:
     # If like none:Field Name:nk -> keep center
     parts = token.split(":")
     if len(parts) >= 2:
-        # drop first and last if they look like codes
-        middle = parts[1]
-        # sometimes 'none' or similar occupies slot 0, field is 1..-2
-        # try to find the longest alpha chunk among parts
-        candidates = [p for p in parts if any(c.isalpha() for c in p)]
-        if candidates:
-            middle = max(candidates, key=len)
-        return middle.strip()
+        # Walk backwards to drop Tableau's prefixes/suffixes (none:, :nk, etc.)
+        for part in reversed(parts):
+            clean = part.strip()
+            if not clean:
+                continue
+            if clean.lower() in FIELD_NAME_STOPWORDS:
+                continue
+            if any(c.isalpha() for c in clean):
+                return clean
+        # Fall back to the middle slice if nothing better surfaced
+        return parts[1].strip() or token.strip()
     # else: simple field name
     return token.strip()
+
+
+def _fields_from_expression(expr: str) -> List[str]:
+    """Extract field names from a formula/expression string."""
+    if not expr:
+        return []
+    refs = FIELD_REF_RE.findall(expr)
+    names: List[str] = []
+    for ref in refs:
+        inner = ref.strip("[]")
+        lower_inner = inner.lower()
+        if any(lower_inner.startswith(prefix) for prefix in DATASOURCE_PREFIXES):
+            continue
+        name = _friendly_field_name(ref)
+        if name:
+            if name.lower() == "parameters":
+                continue
+            names.append(name)
+    return names
+
+
+def _normalize_field_tokens(raw: Optional[str]) -> List[str]:
+    """Return a list of friendly names extracted from an attribute/text blob."""
+    if not raw:
+        return []
+    raw = raw.strip()
+    if not raw:
+        return []
+    names = _fields_from_expression(raw)
+    if names:
+        return names
+    name = _friendly_field_name(raw)
+    return [name] if name else []
+
+
+def _dedupe_preserve_order(values: List[str]) -> List[str]:
+    seen: Set[str] = set()
+    deduped: List[str] = []
+    for v in values:
+        if v and v not in seen:
+            seen.add(v)
+            deduped.append(v)
+    return deduped
 
 def _extract_shelves(ws: ET.Element) -> Dict[str, List[str]]:
     """
@@ -361,32 +498,34 @@ def _extract_shelves(ws: ET.Element) -> Dict[str, List[str]]:
     """
     shelves: Dict[str, List[str]] = {k: [] for k in SHELF_TAGS_MULTI + SHELF_TAGS_SINGLE}
 
-    # Multi-item shelves (rows/cols): list all child <column> attributes
+    def _extract_from_node(node: ET.Element) -> List[str]:
+        vals: List[str] = []
+        # Attributes (column/field/name) take precedence
+        attr = node.get("column") or node.get("field") or node.get("name") or node.get("value")
+        vals.extend(_normalize_field_tokens(attr))
+        # <column> children (used on rows/cols) carry their own attrs/text
+        for col in node.findall(".//column"):
+            raw = col.get("field") or col.get("name") or col.get("column") or (col.text or "")
+            vals.extend(_normalize_field_tokens(raw))
+        # Raw text expressions in shelves like <rows>[Field]/[Field]</rows>
+        text_bits = "".join(node.itertext()).strip()
+        if text_bits:
+            vals.extend(_fields_from_expression(text_bits))
+        return vals
+
+    # Multi-item shelves (rows/cols): list all child <column> attributes and inline expressions
     for shelf in SHELF_TAGS_MULTI:
-        node = ws.find(f".//{shelf}")
-        if node is not None:
-            for col in node.findall(".//column"):
-                # column refs may be in 'field' or 'name' or 'column' attrs
-                raw = col.get("field") or col.get("name") or col.get("column") or ""
-                shelves[shelf].append(_friendly_field_name(raw))
+        vals: List[str] = []
+        for node in ws.findall(f".//{shelf}"):
+            vals.extend(_extract_from_node(node))
+        shelves[shelf] = _dedupe_preserve_order(vals)
 
-    # Single-item shelves (encodings): the node usually has a 'column' attribute
+    # Single-item shelves (encodings): gather every attribute reference
     for shelf in SHELF_TAGS_SINGLE:
-        node = ws.find(f".//{shelf}")
-        if node is not None:
-            raw = node.get("column") or node.get("field") or node.get("name") or ""
-            if raw:
-                shelves[shelf].append(_friendly_field_name(raw))
-
-    # De-duplicate while preserving order
-    for k, vals in shelves.items():
-        seen = set()
-        dedup = []
-        for v in vals:
-            if v and v not in seen:
-                seen.add(v)
-                dedup.append(v)
-        shelves[k] = dedup
+        vals: List[str] = []
+        for node in ws.findall(f".//{shelf}"):
+            vals.extend(_extract_from_node(node))
+        shelves[shelf] = _dedupe_preserve_order(vals)
 
     return shelves
 
@@ -425,6 +564,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "lod": 2.0,
         "params": 0.8,
         "shelf_density": 0.8,
+        "calc_formula_complexity": 0.3,
         "mark_bonus": {
             "text": 0.2,
             "bar": 0.5,
@@ -485,6 +625,7 @@ def analyze_workbook(path_str: str, config_path: Optional[str] = None) -> List[D
     has_lod = _detect_has_lod(all_exprs)
     has_table_calc_any = _detect_has_table_calcs(all_exprs)
     params = _gather_parameters(root)
+    calc_library = _collect_calc_library(root)
 
     results: List[Dict[str, Any]] = []
 
@@ -494,7 +635,9 @@ def analyze_workbook(path_str: str, config_path: Optional[str] = None) -> List[D
         num_filters = _worksheet_filter_count(ws)
         fields = _worksheet_field_refs(ws)
         dims, meas = _count_dimensions_measures(fields)
-        num_calcs, has_table_calc_ws = _worksheet_calc_counts(ws)
+        calc_info = _worksheet_calc_details(ws, calc_library)
+        num_calcs = calc_info["count"]
+        has_table_calc_ws = calc_info["has_table_calc"]
 
         shelves = _extract_shelves(ws)
         density = _compute_shelf_density(shelves, cfg)
@@ -509,6 +652,7 @@ def analyze_workbook(path_str: str, config_path: Optional[str] = None) -> List[D
             num_params=len(params),
             mark_types=mark_types,
             shelf_density=density.get("shelf_density", 0),
+            calc_formula_complexity=calc_info["total_complexity"],
             cfg=cfg,
         )
 
@@ -538,6 +682,9 @@ def analyze_workbook(path_str: str, config_path: Optional[str] = None) -> List[D
             "has_table_calc_ws": bool(has_table_calc_ws),
             "has_lod_anywhere": has_lod,
             "num_parameters": len(params),
+            "calculated_fields": calc_info["details"],
+            "calc_formula_complexity_total": calc_info["total_complexity"],
+            "calc_formula_complexity_avg": calc_info["avg_complexity"],
             "complexity_score": score,
         })
 
@@ -558,13 +705,22 @@ def compute_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "num_worksheets": 0,
             "max_score": 0.0,
             "min_score": 0.0,
+            "total_calc_fields": 0,
+            "formula_complexity_total": 0.0,
+            "formula_complexity_avg": 0.0,
         }
     scores = [r.get("complexity_score", 0) for r in rows]
+    total_calc_fields = sum(r.get("num_calculated_fields_est", 0) for r in rows)
+    formula_complexity_total = round(sum(r.get("calc_formula_complexity_total", 0.0) for r in rows), 2)
+    formula_complexity_avg = round(formula_complexity_total / total_calc_fields, 2) if total_calc_fields else 0.0
     return {
         "overall_score": round(sum(scores) / len(scores), 2),
         "num_worksheets": len(rows),
         "max_score": max(scores),
         "min_score": min(scores),
+        "total_calc_fields": total_calc_fields,
+        "formula_complexity_total": formula_complexity_total,
+        "formula_complexity_avg": formula_complexity_avg,
     }
 
 
@@ -679,6 +835,9 @@ def compute_corpus_summary(dir_results: List[Dict[str, Any]]) -> Dict[str, Any]:
     worksheet_scores = [ws.get("complexity_score", 0.0) for ws in all_ws]
     has_table_calc = [bool(ws.get("has_table_calc_ws")) for ws in all_ws]
     has_lod_anywhere = [bool(ws.get("has_lod_anywhere")) for ws in all_ws]
+    total_calc_fields = sum(ws.get("num_calculated_fields_est", 0) for ws in all_ws)
+    formula_complexity_total = round(sum(ws.get("calc_formula_complexity_total", 0.0) for ws in all_ws), 2)
+    formula_complexity_avg = round(formula_complexity_total / total_calc_fields, 2) if total_calc_fields else 0.0
 
     # mark types
     from collections import Counter
@@ -706,6 +865,9 @@ def compute_corpus_summary(dir_results: List[Dict[str, Any]]) -> Dict[str, Any]:
         "shelf_density_avg": _safe_mean([ws.get("shelf_density", 0) for ws in all_ws]),
         "errors_count": errors_count,
         "top_mark_types": top_mark_types,
+        "total_calc_fields": total_calc_fields,
+        "formula_complexity_total": formula_complexity_total,
+        "formula_complexity_avg": formula_complexity_avg,
     }
     return corpus
 
@@ -770,7 +932,11 @@ def _write_output(data: Any, out_path: Path) -> None:
 
         # Worksheet CSV
         if rows:
-            fieldnames = list(rows[0].keys())
+            fieldnames: List[str] = list(rows[0].keys())
+            for r in rows[1:]:
+                for key in r.keys():
+                    if key not in fieldnames:
+                        fieldnames.append(key)
         else:
             fieldnames = [
                 "worksheet", "mark_types", "num_fields_used", "num_dimensions_est",
@@ -788,6 +954,16 @@ def _write_output(data: Any, out_path: Path) -> None:
                 for key in ["mark_types","rows","cols","color","size","shape","label","tooltip","detail","path","text_shelf","angle","opacity","shelf_channels_used"]:
                     if isinstance(r.get(key), list):
                         r[key] = ";".join(r[key])
+                if isinstance(r.get("calculated_fields"), list):
+                    formatted = []
+                    for item in r["calculated_fields"]:
+                        field = item.get("field", "")
+                        formula = (item.get("formula") or "").replace("\n", " ").strip()
+                        if field:
+                            formatted.append(f"{field}: {formula}")
+                        else:
+                            formatted.append(formula)
+                    r["calculated_fields"] = " | ".join(formatted)
 
                 writer.writerow(r)
 
@@ -838,13 +1014,30 @@ def main():
                         })
                 # Worksheets
                 if all_rows:
-                    ws_fields = list(all_rows[0].keys())
+                    ws_fields: List[str] = list(all_rows[0].keys())
+                    for row in all_rows[1:]:
+                        for key in row.keys():
+                            if key not in ws_fields:
+                                ws_fields.append(key)
                     with out_path.open("w", newline="", encoding="utf-8") as f:
                         w = csv.DictWriter(f, fieldnames=ws_fields, delimiter=delim)
                         w.writeheader()
                         for r in all_rows:
                             if isinstance(r.get("mark_types"), list):
                                 r["mark_types"] = ";".join(r["mark_types"])
+                            for key in ["rows","cols","color","size","shape","label","tooltip","detail","path","text_shelf","angle","opacity","shelf_channels_used"]:
+                                if isinstance(r.get(key), list):
+                                    r[key] = ";".join(r[key])
+                            if isinstance(r.get("calculated_fields"), list):
+                                formatted = []
+                                for item in r["calculated_fields"]:
+                                    field = item.get("field", "")
+                                    formula = (item.get("formula") or "").replace("\n", " ").strip()
+                                    if field:
+                                        formatted.append(f"{field}: {formula}")
+                                    else:
+                                        formatted.append(formula)
+                                r["calculated_fields"] = " | ".join(formatted)
                             w.writerow(r)
                 # Summaries
                 sum_path = out_path.with_name(out_path.stem + "_summaries" + out_path.suffix)
