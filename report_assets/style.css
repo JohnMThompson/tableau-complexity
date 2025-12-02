@@ -1,0 +1,272 @@
+:root {
+  font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #0f172a;
+  background: #f6f7fb;
+  line-height: 1.5;
+  font-size: 16px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0 1.5rem 3rem;
+  background: #f6f7fb;
+}
+
+.tc-header {
+  padding: 2rem 0 1.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  font-size: 0.75rem;
+  color: #6366f1;
+  margin: 0 0 0.25rem;
+}
+
+.tc-header h1 {
+  margin: 0;
+  font-size: clamp(1.8rem, 4vw, 2.5rem);
+}
+
+.subtitle {
+  margin: 0.25rem 0 0;
+  color: #475569;
+}
+
+.meta {
+  text-align: right;
+  color: #64748b;
+  font-size: 0.85rem;
+}
+
+.meta-value {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+main section {
+  margin-bottom: 2.5rem;
+}
+
+h2 {
+  margin-bottom: 0.4rem;
+}
+
+.section-desc {
+  color: #475569;
+  margin-top: 0;
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+  border: 1px solid #e2e8f0;
+}
+
+.card .label {
+  font-size: 0.8rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.card .value {
+  font-size: 1.7rem;
+  font-weight: 700;
+  margin: 0.2rem 0;
+}
+
+.card .subtext {
+  color: #475569;
+  font-size: 0.9rem;
+}
+
+.table-wrapper {
+  overflow-x: auto;
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 600px;
+}
+
+thead {
+  background: #eef2ff;
+  color: #312e81;
+}
+
+th, td {
+  padding: 0.85rem 1rem;
+  text-align: left;
+  border-bottom: 1px solid #e2e8f0;
+  vertical-align: top;
+}
+
+tbody tr:nth-child(every-odd) {
+  background: #fafbff;
+}
+
+tbody tr:hover {
+  background: #f1f5f9;
+}
+
+.worksheet-name {
+  font-weight: 600;
+  margin-bottom: 0.2rem;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.5rem;
+  margin: 0.1rem;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #312e81;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.accordion {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+details {
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  padding: 0.75rem 1rem;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
+}
+
+summary {
+  cursor: pointer;
+  font-weight: 600;
+  outline: none;
+}
+
+.formula-row {
+  margin-top: 0.6rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid #e2e8f0;
+}
+
+.formula-row pre {
+  margin: 0.4rem 0 0;
+  padding: 0.75rem;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #f8fafc;
+  overflow-x: auto;
+  font-size: 0.85rem;
+}
+
+footer {
+  text-align: center;
+  color: #94a3b8;
+  font-size: 0.85rem;
+  margin-top: 3rem;
+}
+
+.hidden {
+  display: none;
+}
+
+#filter-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+#filter-section select {
+  max-width: 280px;
+  padding: 0.45rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid #cbd5f5;
+  background: #fff;
+  font-size: 1rem;
+}
+
+.chart-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+  border: 1px solid #e2e8f0;
+  margin: 1rem 0 2rem;
+}
+
+.bar-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.bar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.bar-label {
+  width: 120px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.bar-track {
+  flex: 1;
+  background: #e2e8f0;
+  border-radius: 999px;
+  overflow: hidden;
+  height: 14px;
+}
+
+.bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4f46e5, #818cf8);
+  border-radius: 999px;
+}
+
+.bar-value {
+  min-width: 32px;
+  text-align: right;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+@media (max-width: 640px) {
+  body {
+    padding: 0 1rem 2rem;
+  }
+
+  table {
+    min-width: unset;
+  }
+}

@@ -37,6 +37,8 @@ import xml.etree.ElementTree as ET
 import re
 import json
 import csv
+import datetime
+import shutil
 from typing import Dict, Any, List, Optional, Tuple, Set
 
 
@@ -554,6 +556,8 @@ def _compute_shelf_density(shelves: Dict[str, List[str]], cfg: Dict[str, Any]) -
 # Config loading (weights, channels, mark bonuses)
 # -----------------------------
 
+BASE_DIR = Path(__file__).parent
+
 DEFAULT_CONFIG: Dict[str, Any] = {
     "weights": {
         "dims": 0.5,
@@ -871,6 +875,86 @@ def compute_corpus_summary(dir_results: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
     return corpus
 
+
+# -----------------------------
+# Report rendering helpers
+# -----------------------------
+
+def _copy_report_assets(dest_dir: Path) -> None:
+    """Copy static CSS/JS assets next to the generated report."""
+    src_assets = BASE_DIR / "report_assets"
+    if not src_assets.exists():
+        return
+    dest_assets = dest_dir / "report_assets"
+    for item in src_assets.rglob("*"):
+        if item.is_dir():
+            continue
+        rel = item.relative_to(src_assets)
+        target = dest_assets / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(item, target)
+
+
+def _prepare_workbook_report(data: Dict[str, Any], workbook_label: str) -> Dict[str, Any]:
+    summary = data.get("summary", {})
+    rows = []
+    for ws in data.get("worksheets", []):
+        row = dict(ws)
+        row["workbook"] = workbook_label
+        rows.append(row)
+    return {
+        "name": workbook_label,
+        "summary": summary,
+        "worksheets": rows,
+    }
+
+
+def _prepare_directory_report(dir_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    workbooks: List[Dict[str, Any]] = []
+    all_ws: List[Dict[str, Any]] = []
+    for item in dir_results:
+        wb_name = item.get("workbook") or "Workbook"
+        workbooks.append({
+            "workbook": wb_name,
+            "summary": item.get("summary", {}),
+        })
+        for ws in item.get("worksheets", []):
+            row = dict(ws)
+            row["workbook"] = wb_name
+            all_ws.append(row)
+    all_ws.sort(key=lambda r: r.get("complexity_score", 0.0), reverse=True)
+    return {
+        "workbooks": workbooks,
+        "corpus_summary": compute_corpus_summary(dir_results),
+        "all_worksheets": all_ws[:300],
+    }
+
+
+def _build_report_payload(mode: str, title: str, workbook_data: Optional[Dict[str, Any]] = None, directory_data: Optional[List[Dict[str, Any]]] = None, workbook_label: Optional[str] = None) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "title": title,
+        "generated_at": datetime.datetime.utcnow().isoformat(timespec="seconds"),
+        "mode": mode,
+    }
+    if mode == "workbook" and workbook_data is not None:
+        payload["workbook"] = _prepare_workbook_report(workbook_data, workbook_label or title)
+    elif mode == "directory" and directory_data is not None:
+        payload["directory"] = _prepare_directory_report(directory_data)
+    return payload
+
+
+def _render_report(payload: Dict[str, Any], report_path: Path) -> None:
+    template_path = BASE_DIR / "templates" / "report.html"
+    if not template_path.exists():
+        raise FileNotFoundError(f"Report template not found at {template_path}")
+    template = template_path.read_text(encoding="utf-8")
+    json_blob = json.dumps(payload, indent=2)
+    json_blob_safe = json_blob.replace("</", "<\\/")
+    html = template.replace("{{DATA_JSON}}", json_blob_safe)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(html, encoding="utf-8")
+    _copy_report_assets(report_path.parent)
+
 # -----------------------------
 # CLI
 # -----------------------------
@@ -987,11 +1071,13 @@ def main():
     parser.add_argument("--out", help="Output file (.json, .csv, or .tsv). If omitted, prints JSON to stdout.")
     parser.add_argument("--recursive", action="store_true", help="When INPUT is a directory, recurse into subfolders.")
     parser.add_argument("--config", help="Path to config JSON with weights/channel settings.", default=None)
+    parser.add_argument("--report", help="Path to an HTML report to generate.", default=None)
     args = parser.parse_args()
 
     target = Path(args.workbook)
+    report_path = Path(args.report) if args.report else None
     if target.is_dir():
-        data = analyze_directory(str(target))
+        data = analyze_directory(str(target), recursive=args.recursive, config_path=args.config)
         if args.out:
             out_path = Path(args.out)
             if out_path.suffix.lower() == ".json":
@@ -1053,8 +1139,16 @@ def main():
                 raise ValueError("Unsupported output extension. Use .json, .csv, or .tsv")
         else:
             print(json.dumps(data, indent=2))
+        if report_path:
+            payload = _build_report_payload(
+                mode="directory",
+                title=str(target),
+                directory_data=data,
+            )
+            _render_report(payload, report_path)
+            print(f"Report saved to {report_path} (assets folder copied alongside).")
     else:
-        data = analyze_workbook_with_summary(str(target))
+        data = analyze_workbook_with_summary(str(target), config_path=args.config)
         if args.out:
             out_path = Path(args.out)
             _write_output(data, out_path)
@@ -1066,6 +1160,15 @@ def main():
                 print(f"Summary also saved to {side_json.name} and {side_csv.name}")
         else:
             print(json.dumps(data, indent=2))
+        if report_path:
+            payload = _build_report_payload(
+                mode="workbook",
+                title=str(target),
+                workbook_data=data,
+                workbook_label=target.name,
+            )
+            _render_report(payload, report_path)
+            print(f"Report saved to {report_path} (assets folder copied alongside).")
 
 if __name__ == "__main__":
     main()

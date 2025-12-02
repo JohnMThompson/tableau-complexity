@@ -9,6 +9,7 @@ A Python utility for parsing Tableau workbooks (`.twb` / `.twbx`) to extract per
 - Compute a **shelf_density** metric and include it in scoring.
 - Extract each worksheet's **calculated field formulas**, score their complexity, and surface the formulas alongside per-worksheet metrics.
 - Aggregate the **formula complexity** across a workbook and fold it into the overall workbook complexity score.
+- Generate a **standalone HTML report** (with local CSS/JS assets) for a more readable deliverable.
 - Flag **table calcs** and **LOD** usage.
 - Compute a **workbook summary**, and in directory mode, a **corpus summary**.
 - **Directory mode** (+ optional `--recursive`) to batch analyze many workbooks.
@@ -28,7 +29,13 @@ python tableau_complexity.py /path/to/folder --out all_results.json
 
 # Directory (recursive)
 python tableau_complexity.py /path/to/folder --recursive --out all_results.csv
+
+# HTML report (copies local assets to the destination folder)
+python tableau_complexity.py /path/to/workbook --report workbook_report.html
+python tableau_complexity.py /path/to/folder --recursive --report corpus_report.html
 ```
+
+The report generator writes a standalone HTML file plus a sibling `report_assets/` directory containing the CSS/JS used by the report. Share both together for an offline-ready experience.
 
 ## Config
 You can provide a config JSON to tune scoring and the channels that count toward density:
@@ -78,7 +85,8 @@ python tableau_complexity.py /path/to/folder --recursive --config config.json --
 - **JSON (per workbook)**: `{ "summary": {...}, "worksheets": [...] }`
 - **CSV (per workbook)**: worksheets table; sidecars:
   - `_summary.json`, `_summary.csv`
-- **Directory CSV**: `all_results.csv` (all worksheets), `all_results_summaries.csv` (per-workbook), plus `all_results_corpus_summary.(json|csv)`.
+ - **Directory CSV**: `all_results.csv` (all worksheets), `all_results_summaries.csv` (per-workbook), plus `all_results_corpus_summary.(json|csv)`.
+- **HTML report**: cards + tables visualizing summary metrics, top worksheets, and detailed calculated fields; ships with local assets for offline sharing.
 
 Each worksheet row now includes the resolved `calculated_fields` (field name, formula text, and formula complexity) as well as aggregate complexity metrics (`calc_formula_complexity_total`, `calc_formula_complexity_avg`). The workbook summaries include the total number of calculated fields plus the aggregated/average formula complexity so you can see how calculated logic contributes to overall workbook complexity.
 
