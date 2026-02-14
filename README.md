@@ -3,6 +3,8 @@
 A Python utility for parsing Tableau workbooks (`.twb` / `.twbx`) to extract per-worksheet metadata (marks, shelves, filters, calcs, parameters, etc.) and compute a configurable complexity score.
 
 ## Features
+![Report Output Screenshot](images/report_screenshot.png)
+
 - Parse `.twb` or `.twbx` (zip) files.
 - Detect mark/chart types with robust fallbacks.
 - Extract **shelves** per worksheet: Rows, Cols, Color, Size, Shape, Label, Tooltip, Detail, Path, Text, Angle, Opacity.
