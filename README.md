@@ -95,7 +95,7 @@ Each worksheet row now includes the resolved `calculated_fields` (field name, fo
 - Privacy: the tool only reads local files; it doesn't phone home.
 
 ## License
-MIT (or adapt to your needs).
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
 
 
 ## Disclaimer
